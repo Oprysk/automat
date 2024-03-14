@@ -23,7 +23,7 @@ router.post('/upload', upload.single('file'), (req: Request, res: Response) => {
 
     // Send the processed data as the response
     res.json({
-      InvoicingMonth: invoicingMonth,
+      invoicingMonth: invoicingMonth,
       currencyRates: currencyRates,
       invoicesData: invoicesData,
     })
