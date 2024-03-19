@@ -4,6 +4,8 @@ import multer from 'multer'
 import type { Request, Response } from 'express'
 
 import { processWorkbook } from './process-data/file'
+import { InvoicingMonthMismatchError } from './errors/InvoicingMonthMistmatchError'
+import { FileStructureError } from './errors/FileStructureError'
 
 export const router = express.Router()
 
@@ -20,15 +22,20 @@ router.post('/upload', upload.single('file'), (req: Request, res: Response) => {
       workbook,
       req.body.invoicingMonth,
     )
-
     // Send the processed data as the response
     res.json({
-      invoicingMonth: invoicingMonth,
-      currencyRates: currencyRates,
-      invoicesData: invoicesData,
+      invoicingMonth,
+      currencyRates,
+      invoicesData,
     })
   } catch (error) {
-    console.error(error)
+    if (
+      error instanceof InvoicingMonthMismatchError ||
+      error instanceof FileStructureError
+    ) {
+      return res.status(422).send(error.message)
+    }
+
     res.status(500).send('Internal Server Error')
   }
 })

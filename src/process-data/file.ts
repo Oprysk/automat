@@ -1,13 +1,20 @@
 import xlsx from 'xlsx'
 import { Columns, InvoicesData, RowData, Status } from '../types'
+import { getOrValidateSheetDate } from './date'
+import { FileStructureError } from '../errors/FileStructureError'
+import { compareArray } from '../utils/array'
 
-export function processWorkbook(workbook: xlsx.WorkBook, _date: string) {
+export function processWorkbook(workbook: xlsx.WorkBook, date: string) {
   // Extracting data from the first sheet
   // TODO: handle multiple sheets
   const sheetName = workbook.SheetNames[0]
   const sheet = workbook.Sheets[sheetName]
-  const { invoicesData, currencyRates, invoicingMonth } =
-    processInvoicesData(sheet)
+
+  validateFileStructure(sheet)
+
+  const invoicingMonth = getOrValidateSheetDate(sheet, date)
+
+  const { invoicesData, currencyRates } = processInvoicesData(sheet)
 
   return { invoicingMonth, currencyRates, invoicesData }
 }
@@ -20,6 +27,7 @@ function processInvoicesData(sheet: xlsx.WorkSheet) {
     header: columns,
     blankrows: false,
   })
+
   // Filter relevant lines
   const relevantLines = rawData.filter((row: RowData) => {
     if (columns.every((column) => row[column] === column)) {
@@ -28,26 +36,28 @@ function processInvoicesData(sheet: xlsx.WorkSheet) {
     return row[Columns.Status] === Status.Ready || row[Columns.InvoiceNo]
   })
 
-  // TODO: Extract invoicing month from the file and validate with input
-  const invoicingMonth = new Date().toISOString().slice(0, 7)
-
   const invoicesData: Array<InvoicesData> = []
   const mandatoryFields = columns.slice(0, -2)
-  const numberFields = [
+  const numericFields = [
     Columns.Quantity,
     Columns.PricePerItem,
     Columns.TotalPrice,
   ]
-  const validationFields = [...mandatoryFields, ...numberFields]
 
   // Iterate through relevant lines
   relevantLines.forEach((row: RowData) => {
     // Perform additional validations
     const validationErrors: Array<string> = []
-    validationFields.forEach((field) => {
+    mandatoryFields.forEach((field) => {
       if (row[field] === undefined || row[field] === '') {
         validationErrors.push(`${field} is required.`)
-      } else if (Number.isNaN(Number(row[field]))) {
+      }
+    })
+    numericFields.forEach((field) => {
+      if (
+        Number.isNaN(Number(row[field])) &&
+        !validationErrors.some((error) => error.includes(field))
+      ) {
         validationErrors.push(`${field} must be numeric.`)
       }
     })
@@ -56,19 +66,20 @@ function processInvoicesData(sheet: xlsx.WorkSheet) {
       [key]: row[key] || null,
     }))
 
+    const { invoiceTotal, errors } = calculateInvoiceTotal(row, currencyRates)
+
     // Append the record to invoicesData
     invoicesData.push({
       ...Object.assign({}, ...data),
-      validationErrors,
+      invoiceTotal,
+      validationErrors: [...validationErrors, ...errors],
     })
   })
 
-  calculateInvoiceTotal(invoicesData, currencyRates)
-
-  return { invoicesData, invoicingMonth, currencyRates }
+  return { invoicesData, currencyRates }
 }
 
-function getCurrencyRates(sheet: Record<string, any>) {
+function getCurrencyRates(sheet: Record<string, number>) {
   const rawData: Array<{ Currency: string; Rate?: number }> =
     xlsx.utils.sheet_to_json(sheet, {
       header: ['Currency', 'Rate'],
@@ -87,34 +98,75 @@ function getCurrencyRates(sheet: Record<string, any>) {
   return currencyRates
 }
 
-// TODO: refactor this to make it more safe
 function calculateInvoiceTotal(
-  invoicesData: Array<InvoicesData>,
-  currencyRates: Record<string, any>,
-) {
-  invoicesData.forEach((invoice) => {
-    const totalPrice = Number(invoice[Columns.TotalPrice])
-    const itemCurrency = invoice[Columns.ItemPriceCurrency] || ''
-    const invoiceCurrency = invoice[Columns.InvoiceCurrency] || ''
+  data: RowData,
+  currencyRates: Record<string, number>,
+): {
+  invoiceTotal: number | null
+  errors: Array<string>
+} {
+  const totalPrice = data[Columns.TotalPrice]
+  const invoiceCurrency = data[Columns.InvoiceCurrency]
+  let invoiceTotal = null
+  const errors: Array<string> = []
 
-    // If the currencies are different, convert the Total Price to the Invoice Currency
-    if (itemCurrency !== invoiceCurrency) {
-      const conversionRate = currencyRates[itemCurrency]
+  if (!totalPrice) {
+    return { invoiceTotal, errors }
+  }
 
-      if (!conversionRate || !currencyRates[invoiceCurrency]) {
-        invoice.validationErrors.push('Currency rate not found')
-      }
+  if (!invoiceCurrency) {
+    return { invoiceTotal, errors }
+  }
 
-      const invoiceTotal =
-        (totalPrice / conversionRate) * currencyRates[invoiceCurrency]
+  if (invoiceCurrency in currencyRates) {
+    const conversionRate = currencyRates[invoiceCurrency]
+    invoiceTotal = totalPrice * conversionRate
+  } else {
+    errors.push(`Conversion rate not found for currency: ${invoiceCurrency}`)
+  }
 
-      invoice['Invoice Total'] = Number.isNaN(invoiceTotal)
-        ? null
-        : invoiceTotal.toFixed(2)
-    } else {
-      invoice['Invoice Total'] = Number.isNaN(totalPrice)
-        ? null
-        : totalPrice.toFixed(2)
+  return { invoiceTotal, errors }
+}
+
+function validateFileStructure(sheet: xlsx.WorkSheet) {
+  const columns = Object.values(Columns)
+  const [firstRow, ...restRows] = xlsx.utils.sheet_to_json<Array<string>>(
+    sheet,
+    {
+      header: 1,
+    },
+  )
+
+  if (!firstRow.length) {
+    throw new FileStructureError(
+      'File structure is invalid: First row is empty but should contain invoicing date.',
+    )
+  }
+
+  const filteredRows = restRows.filter((row) => row.length)
+
+  let currencyRateRows = 0
+  let invoiceDataRows = false
+
+  for (let i = 0; i < filteredRows.length; i++) {
+    if (filteredRows[i].some((value) => value?.toString()?.includes('Rate'))) {
+      currencyRateRows += 1
+      continue
     }
-  })
+
+    if (compareArray(filteredRows[i], columns)) {
+      invoiceDataRows = true
+      break
+    }
+  }
+
+  if (!currencyRateRows || !invoiceDataRows) {
+    throw new FileStructureError(
+      `File structure is invalid: ${
+        !currencyRateRows
+          ? 'Currency rate rows are missing.'
+          : 'Invoice data rows are missing.'
+      }`,
+    )
+  }
 }

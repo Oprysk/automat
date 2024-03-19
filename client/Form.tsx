@@ -3,15 +3,11 @@ import styled from '@emotion/styled'
 import { SubmitHandler, useForm } from 'react-hook-form'
 import { FieldSet } from './FieldSet'
 import { Field } from './Field'
-import { FormValues } from './App'
+import { FormValues } from './types'
 
 const DATE_PATTERN = /\d{4}-\d{2}/
 
-export const FileUploadForm = ({
-  onSubmit,
-}: {
-  onSubmit: SubmitHandler<FormValues>
-}) => {
+export const Form = ({ onSubmit }: { onSubmit: SubmitHandler<FormValues> }) => {
   const {
     register,
     handleSubmit,
