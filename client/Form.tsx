@@ -47,7 +47,7 @@ export const Form = ({ onSubmit }: { onSubmit: SubmitHandler<FormValues> }) => {
           </Field>
         </FieldSet>
         <Field>
-          <Button>Save</Button>
+          <Button>Send</Button>
         </Field>
       </form>
     </Container>

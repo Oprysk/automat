@@ -105,10 +105,17 @@ function calculateInvoiceTotal(
   invoiceTotal: number | null
   errors: Array<string>
 } {
-  const totalPrice = data[Columns.TotalPrice]
+  let totalPrice = data[Columns.TotalPrice]
   const invoiceCurrency = data[Columns.InvoiceCurrency]
+  const itemPriceCurrency = data[Columns.ItemPriceCurrency] || ''
+  const quantity = data[Columns.Quantity]
+  const pricePerItem = data[Columns.PricePerItem]
   let invoiceTotal = null
   const errors: Array<string> = []
+
+  if (!totalPrice && quantity && pricePerItem) {
+    totalPrice = quantity * pricePerItem
+  }
 
   if (!totalPrice) {
     return { invoiceTotal, errors }
@@ -118,9 +125,17 @@ function calculateInvoiceTotal(
     return { invoiceTotal, errors }
   }
 
+  if (itemPriceCurrency === invoiceCurrency) {
+    return { invoiceTotal: totalPrice, errors }
+  }
+
   if (invoiceCurrency in currencyRates) {
-    const conversionRate = currencyRates[invoiceCurrency]
-    invoiceTotal = totalPrice * conversionRate
+    if (!currencyRates[itemPriceCurrency] || !currencyRates[invoiceCurrency]) {
+      errors.push('Exchange rates not available for the provided currencies.')
+    }
+    const exchangeRate =
+      currencyRates[itemPriceCurrency] / currencyRates[invoiceCurrency]
+    invoiceTotal = +(totalPrice * exchangeRate).toFixed(4)
   } else {
     errors.push(`Conversion rate not found for currency: ${invoiceCurrency}`)
   }
